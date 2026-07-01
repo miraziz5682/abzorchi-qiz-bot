@@ -183,12 +183,31 @@ def init_db():
             ],
         )
         conn.commit()
+    elif prizes_count == 5:
+        # Eski (5 ta joyli) baza - yangi 5 ta bo'sh joy qo'shib qo'yamiz
+        conn.executemany(
+            "INSERT INTO prizes (name, probability, active) VALUES (?, ?, ?)",
+            [
+                ("Bo'sh joy 6", 0.0, 0),
+                ("Bo'sh joy 7", 0.0, 0),
+                ("Bo'sh joy 8", 0.0, 0),
+                ("Bo'sh joy 9", 0.0, 0),
+                ("Bo'sh joy 10", 0.0, 0),
+            ],
+        )
+        conn.commit()
 
     settings_count = list(
         conn.execute("SELECT COUNT(*) c FROM settings WHERE key='referral_amount'").fetchone().values()
     )[0]
     if settings_count == 0:
         conn.execute("INSERT INTO settings (key, value) VALUES ('referral_amount', '200000')")
+        conn.commit()
+    else:
+        # Eski standart qiymat (500000) qolib ketgan bo'lsa, bir martalik yangilash
+        conn.execute(
+            "UPDATE settings SET value='200000' WHERE key='referral_amount' AND value='500000'"
+        )
         conn.commit()
 
     conn.close()
@@ -380,7 +399,7 @@ async def show_my_bonuses(message: types.Message):
     text = f"🔑 Kodingiz: <code>{customer['code']}</code>\n\n🎁 Yutuqlaringiz:\n"
     if spins:
         for s in spins:
-            status = "✅ olingan" if s["awarded"] else "⏳ do'konda kutilmoqda"
+            status = "✅ olingan" if s["awarded"] else "⏳ sotuv bo'limida kutilmoqda"
             text += f"— {s['prize_name']} ({status})\n"
     else:
         text += "Hozircha yutuq yo'q.\n"
