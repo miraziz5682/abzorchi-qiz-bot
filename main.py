@@ -350,12 +350,25 @@ async def phone_received(message: types.Message, state: FSMContext):
 # ASOSIY MENYU
 # ============================================================
 
+CUSTOMER_WEBAPP_URL = os.environ.get("CUSTOMER_WEBAPP_URL", "")
+
+
 def build_main_kb(customer):
-    rows = [
-        [types.KeyboardButton(text="🚗 Avtomobillar")],
-        [types.KeyboardButton(text="🎁 Mening bonuslarim")],
-        [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
-    ]
+    if CUSTOMER_WEBAPP_URL:
+        cars_button = types.KeyboardButton(
+            text="🚗 Avtomobillar / Bonuslarim",
+            web_app=types.WebAppInfo(url=CUSTOMER_WEBAPP_URL),
+        )
+        rows = [
+            [cars_button],
+            [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
+        ]
+    else:
+        rows = [
+            [types.KeyboardButton(text="🚗 Avtomobillar")],
+            [types.KeyboardButton(text="🎁 Mening bonuslarim")],
+            [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
+        ]
     if customer["spin_available"]:
         rows.insert(0, [types.KeyboardButton(text="🎁 Sovg'amni olish")])
     return types.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -644,6 +657,40 @@ async def api_list_customers(request):
     return web.json_response({"ok": True, "customers": [dict(c) for c in customers]}, headers=CORS_HEADERS)
 
 
+async def api_customer_info(request):
+    """Mijozning o'zi Web App orqali o'z kodi, yutuqlari va referallarini ko'rishi uchun."""
+    telegram_id = request.query.get("telegram_id")
+    if not telegram_id:
+        return web.json_response({"ok": False, "error": "telegram_id kerak"}, status=400, headers=CORS_HEADERS)
+
+    conn = get_db()
+    customer = conn.execute("SELECT * FROM customers WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not customer:
+        conn.close()
+        return web.json_response({"ok": False, "error": "Mijoz topilmadi. Botda /start bosing."}, headers=CORS_HEADERS)
+
+    spins = conn.execute(
+        "SELECT * FROM spins WHERE customer_id=? ORDER BY id DESC", (customer["id"],)
+    ).fetchall()
+    referrals = conn.execute(
+        "SELECT * FROM referrals WHERE referrer_code=? ORDER BY id DESC", (customer["code"],)
+    ).fetchall()
+    referral_amount = get_setting("referral_amount", "200000")
+    conn.close()
+
+    bot_username = (await bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start={customer['code']}"
+
+    return web.json_response({
+        "ok": True,
+        "customer": dict(customer),
+        "spins": [dict(s) for s in spins],
+        "referrals": [dict(r) for r in referrals],
+        "referral_amount": int(referral_amount),
+        "referral_link": ref_link,
+    }, headers=CORS_HEADERS)
+
+
 # ============================================================
 # WEBHOOK VA ILOVANI ISHGA TUSHIRISH
 # ============================================================
@@ -664,6 +711,7 @@ def main():
         ("POST", "/api/admin/prizes", api_update_prizes),
         ("GET", "/api/admin/stats", api_stats),
         ("GET", "/api/admin/customers", api_list_customers),
+        ("GET", "/api/customer/info", api_customer_info),
     ]
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
