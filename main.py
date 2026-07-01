@@ -633,6 +633,9 @@ def main():
     ]
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
+
+    unique_paths = {path for _, path, _ in routes}
+    for path in unique_paths:
         app.router.add_route("OPTIONS", path, options_handler)
 
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
