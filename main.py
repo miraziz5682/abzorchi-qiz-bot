@@ -168,13 +168,18 @@ def init_db():
     prizes_count = list(conn.execute("SELECT COUNT(*) c FROM prizes").fetchone().values())[0]
     if prizes_count == 0:
         conn.executemany(
-            "INSERT INTO prizes (name, probability, active) VALUES (?, ?, 1)",
+            "INSERT INTO prizes (name, probability, active) VALUES (?, ?, ?)",
             [
-                ("Polik (kilamcha)", 40.0),
-                ("Brizgavik", 25.0),
-                ("Podnomer ramkasi", 20.0),
-                ("Bepul tuning xizmati", 10.0),
-                ("Katta sovg'a", 5.0),
+                ("Polik (kilamcha)", 40.0, 1),
+                ("Brizgavik", 25.0, 1),
+                ("Podnomer ramkasi", 20.0, 1),
+                ("Bepul tuning xizmati", 10.0, 1),
+                ("Katta sovg'a", 5.0, 1),
+                ("Bo'sh joy 6", 0.0, 0),
+                ("Bo'sh joy 7", 0.0, 0),
+                ("Bo'sh joy 8", 0.0, 0),
+                ("Bo'sh joy 9", 0.0, 0),
+                ("Bo'sh joy 10", 0.0, 0),
             ],
         )
         conn.commit()
@@ -183,7 +188,7 @@ def init_db():
         conn.execute("SELECT COUNT(*) c FROM settings WHERE key='referral_amount'").fetchone().values()
     )[0]
     if settings_count == 0:
-        conn.execute("INSERT INTO settings (key, value) VALUES ('referral_amount', '500000')")
+        conn.execute("INSERT INTO settings (key, value) VALUES ('referral_amount', '200000')")
         conn.commit()
 
     conn.close()
@@ -276,7 +281,7 @@ async def phone_received(message: types.Message, state: FSMContext):
 
     conn.execute(
         "INSERT INTO customers (telegram_id, full_name, phone, code, referred_by_code, spin_available, created_at) "
-        "VALUES (?, ?, ?, ?, ?, 0, ?)",
+        "VALUES (?, ?, ?, ?, ?, 1, ?)",
         (
             message.from_user.id,
             message.from_user.full_name,
@@ -287,12 +292,9 @@ async def phone_received(message: types.Message, state: FSMContext):
         ),
     )
     conn.commit()
-    customer_id = conn.execute(
-        "SELECT id FROM customers WHERE code=?", (code,), cols=["id"]
-    ).fetchone()["id"]
 
     if ref_code:
-        amount = int(get_setting("referral_amount", "500000"))
+        amount = int(get_setting("referral_amount", "200000"))
         conn.execute(
             "INSERT INTO referrals (referrer_code, referred_code, status, amount, created_at) "
             "VALUES (?, ?, 'pending', ?, ?)",
@@ -300,13 +302,6 @@ async def phone_received(message: types.Message, state: FSMContext):
         )
         conn.commit()
 
-    # Birinchi (avtomatik) aylantirish
-    prize = pick_prize()
-    conn.execute(
-        "INSERT INTO spins (customer_id, prize_name, awarded, created_at) VALUES (?, ?, 0, ?)",
-        (customer_id, prize, now_str()),
-    )
-    conn.commit()
     conn.close()
 
     bot_username = (await bot.get_me()).username
@@ -316,9 +311,7 @@ async def phone_received(message: types.Message, state: FSMContext):
         f"✅ Ro'yxatdan o'tdingiz!\n\n"
         f"🔑 Sizning kodingiz: <code>{code}</code>\n"
         f"(Xarid vaqtida shu kodni sotuvchiga ayting)\n\n"
-        f"🎉 Tabriklaymiz! Barabandan yutuqingiz:\n"
-        f"🎁 <b>{prize}</b>\n\n"
-        f"Sovg'ani olish uchun do'konga tashrif buyuring va kodingizni ko'rsating.\n\n"
+        f"🎁 Sizga sovg'a tayyorlandi! Pastdagi tugma orqali oling.\n\n"
         f"👥 Do'stlaringizni taklif qiling va pul bonusiga ega bo'ling:\n{ref_link}",
         parse_mode="HTML",
         reply_markup=types.ReplyKeyboardRemove(),
@@ -345,7 +338,7 @@ def build_main_kb(customer):
         [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
     ]
     if customer["spin_available"]:
-        rows.insert(0, [types.KeyboardButton(text="🎡 Barabanni aylantirish")])
+        rows.insert(0, [types.KeyboardButton(text="🎁 Sovg'amni olish")])
     return types.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -416,7 +409,7 @@ async def show_referral_link(message: types.Message):
 
     bot_username = (await bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start={customer['code']}"
-    amount = get_setting("referral_amount", "500000")
+    amount = get_setting("referral_amount", "200000")
     await message.answer(
         f"👥 Do'stingizni shu havola orqali taklif qiling:\n{ref_link}\n\n"
         f"Do'stingiz xarid qilsa, sizga <b>{int(amount):,} so'm</b> bonus beriladi!",
@@ -424,14 +417,14 @@ async def show_referral_link(message: types.Message):
     )
 
 
-@dp.message(F.text == "🎡 Barabanni aylantirish")
+@dp.message(F.text == "🎁 Sovg'amni olish")
 async def spin_wheel(message: types.Message):
     conn = get_db()
     customer = conn.execute(
         "SELECT * FROM customers WHERE telegram_id=?", (message.from_user.id,)
     ).fetchone()
     if not customer or not customer["spin_available"]:
-        await message.answer("Hozircha aylantirish huquqingiz yo'q.")
+        await message.answer("Hozircha sovg'a olish huquqingiz yo'q.")
         conn.close()
         return
 
@@ -446,7 +439,7 @@ async def spin_wheel(message: types.Message):
 
     await message.answer(
         f"🎉 Tabriklaymiz!\n🎁 Yutuqingiz: <b>{prize}</b>\n\n"
-        f"Sovg'ani olish uchun do'konga tashrif buyuring.",
+        f"Sovg'ani olish uchun sotuv bo'limiga tashrif buyuring.",
         parse_mode="HTML",
     )
 
