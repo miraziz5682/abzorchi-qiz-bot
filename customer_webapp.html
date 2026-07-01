@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MS AUTOCREDIT</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f0f0f; --card: #1c1c1c; --gold: #c9a84c; --gold-light: #e8c97a;
+    --text: #f0f0f0; --muted: #888; --border: #333; --success: #2ecc71;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; font-size: 14px; padding-bottom: 40px; }
+  .header { background: var(--card); padding: 16px; border-bottom: 1px solid var(--border); text-align: center; }
+  .header-logo { font-size: 19px; font-weight: 700; color: var(--gold); letter-spacing: 0.5px; }
+  .header-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  .tabs { display: flex; gap: 6px; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .tab { flex: 1; padding: 9px; border-radius: 8px; background: #262626; color: var(--muted); font-size: 13px; text-align: center; cursor: pointer; font-weight: 600; }
+  .tab.active { background: var(--gold); color: #000; }
+
+  .content { padding: 16px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .car-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 10px; }
+  .car-name { font-size: 16px; font-weight: 700; color: var(--gold); margin-bottom: 8px; }
+  .pos-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2a2a2a; font-size: 13px; }
+  .pos-row:last-child { border-bottom: none; }
+
+  .code-card {
+    background: linear-gradient(135deg, #1a1500, #2a2000);
+    border: 1.5px solid var(--gold);
+    border-radius: 14px;
+    padding: 18px;
+    text-align: center;
+    margin-bottom: 14px;
+  }
+  .code-label { font-size: 12px; color: var(--muted); }
+  .code-value { font-size: 28px; font-weight: 700; color: var(--gold-light); letter-spacing: 2px; margin: 6px 0; }
+  .code-hint { font-size: 11px; color: var(--muted); }
+
+  .section-title { font-size: 13px; color: var(--gold); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin: 16px 0 8px; }
+  .item-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+  .item-name { font-size: 14px; }
+  .badge { padding: 4px 9px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .badge.pending { background: #3a2f00; color: var(--gold-light); }
+  .badge.done { background: #0f3a1e; color: var(--success); }
+
+  .ref-card { background: var(--card); border: 1.5px solid var(--gold); border-radius: 12px; padding: 16px; text-align: center; }
+  .ref-amount { font-size: 22px; font-weight: 700; color: var(--gold-light); margin: 6px 0; }
+  .ref-link-box { background: #0a0a0a; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 12px; word-break: break-all; margin: 10px 0; color: var(--muted); }
+  .btn { width: 100%; background: var(--gold); color: #000; font-weight: 700; padding: 12px; border: none; border-radius: 10px; cursor: pointer; font-size: 14px; margin-top: 6px; }
+
+  .empty { text-align: center; color: var(--muted); padding: 20px; font-size: 13px; }
+  .loading { text-align: center; color: var(--muted); padding: 30px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-logo">MS AUTOCREDIT</div>
+  <div class="header-sub">Avtomobil katalogi va bonuslar</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="cars" onclick="switchTab('cars')">🚗 Avtomobillar</div>
+  <div class="tab" data-tab="bonus" onclick="switchTab('bonus')">🎁 Bonuslarim</div>
+  <div class="tab" data-tab="ref" onclick="switchTab('ref')">👥 Taklif</div>
+</div>
+
+<div class="content">
+  <div class="panel active" id="panel-cars"></div>
+  <div class="panel" id="panel-bonus"></div>
+  <div class="panel" id="panel-ref"></div>
+</div>
+
+<script>
+// ⚠️ MUHIM: Mijozlar boti joylashgan Render manzilini shu yerga yozing (oxirida / bo'lmasin)
+const API_BASE = "https://SIZNING-MIJOZLAR-BOTI-MANZILI.onrender.com";
+
+const CARS = {
+  "TRACKER-2": { "LS PLUS AT": 220951000, "LTZ TURBO AT": 244108840, "PREMIER TURBO AT": 272656160, "REDLINE TURBO AT": 282474080 },
+  "ONIX": { "3 LT MT": 184750000, "LTZ TURBO AT": 199899000, "PREMIER 2 TURBO AT": 221640160, "REDLINE TURBO AT": 230474000 },
+  "COBALT": { "Style MCM": 156100000, "Midnight MCM": 165200000 },
+  "DAMAS": { "STAYL": 96932000, "VAN": 93170000, "KOMBI": 96449000 },
+  "LABO": { "Bazaviy": 96370000 },
+  "CAPTIVA 5": { "Bazaviy": 349900000 },
+};
+
+function fmt(n) { return Math.round(n).toLocaleString('uz-UZ') + " so'm"; }
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+}
+
+function renderCars() {
+  const el = document.getElementById('panel-cars');
+  let html = '';
+  Object.entries(CARS).forEach(([model, positions]) => {
+    html += `<div class="car-card"><div class="car-name">${model}</div>`;
+    Object.entries(positions).forEach(([pos, price]) => {
+      html += `<div class="pos-row"><span>${pos}</span><span>${fmt(price)}</span></div>`;
+    });
+    html += `</div>`;
+  });
+  el.innerHTML = html;
+}
+
+async function loadCustomerData() {
+  const tg = window.Telegram ? window.Telegram.WebApp : null;
+  const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+
+  if (!user || !user.id) {
+    document.getElementById('panel-bonus').innerHTML = '<div class="empty">Botni Telegram ichida oching.</div>';
+    document.getElementById('panel-ref').innerHTML = '<div class="empty">Botni Telegram ichida oching.</div>';
+    return;
+  }
+
+  document.getElementById('panel-bonus').innerHTML = '<div class="loading">Yuklanmoqda...</div>';
+  document.getElementById('panel-ref').innerHTML = '<div class="loading">Yuklanmoqda...</div>';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/customer/info?telegram_id=${user.id}`);
+    const data = await res.json();
+
+    if (!data.ok) {
+      document.getElementById('panel-bonus').innerHTML = `<div class="empty">${data.error}</div>`;
+      document.getElementById('panel-ref').innerHTML = `<div class="empty">${data.error}</div>`;
+      return;
+    }
+
+    renderBonus(data);
+    renderReferral(data);
+  } catch (e) {
+    document.getElementById('panel-bonus').innerHTML = '<div class="empty">Xatolik yuz berdi. Qayta urinib ko\'ring.</div>';
+  }
+}
+
+function renderBonus(data) {
+  const el = document.getElementById('panel-bonus');
+  let html = `
+    <div class="code-card">
+      <div class="code-label">Sizning kodingiz</div>
+      <div class="code-value">${data.customer.code}</div>
+      <div class="code-hint">Xarid vaqtida shu kodni sotuvchiga ayting</div>
+    </div>
+    <div class="section-title">🎁 Yutuqlaringiz</div>`;
+
+  if (data.spins.length === 0) {
+    html += '<div class="empty">Hozircha yutuq yo\'q</div>';
+  } else {
+    data.spins.forEach(s => {
+      html += `<div class="item-card">
+        <span class="item-name">${s.prize_name}</span>
+        <span class="badge ${s.awarded ? 'done' : 'pending'}">${s.awarded ? '✅ Olingan' : '⏳ Kutilmoqda'}</span>
+      </div>`;
+    });
+  }
+
+  el.innerHTML = html;
+}
+
+function renderReferral(data) {
+  const el = document.getElementById('panel-ref');
+  let html = `
+    <div class="ref-card">
+      <div style="font-size:13px;color:#888">Do'stingizni taklif qiling</div>
+      <div class="ref-amount">${fmt(data.referral_amount)}</div>
+      <div style="font-size:12px;color:#888">har bir taklif uchun</div>
+      <div class="ref-link-box">${data.referral_link}</div>
+      <button class="btn" onclick="copyLink('${data.referral_link}')">📋 Havolani nusxalash</button>
+    </div>
+    <div class="section-title">👥 Taklif qilganlaringiz</div>`;
+
+  if (data.referrals.length === 0) {
+    html += '<div class="empty">Hozircha hech kimni taklif qilmadingiz</div>';
+  } else {
+    data.referrals.forEach(r => {
+      html += `<div class="item-card">
+        <span class="item-name">${r.referred_code} — ${fmt(r.amount)}</span>
+        <span class="badge ${r.status === 'paid' ? 'done' : 'pending'}">${r.status === 'paid' ? "✅ To'landi" : '⏳ Kutilmoqda'}</span>
+      </div>`;
+    });
+  }
+
+  el.innerHTML = html;
+}
+
+function copyLink(link) {
+  navigator.clipboard.writeText(link).then(() => alert('Havola nusxalandi!'));
+}
+
+try {
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+  tg.expand();
+  tg.setHeaderColor('#0f0f0f');
+} catch(e) {}
+
+renderCars();
+loadCustomerData();
+</script>
+</body>
+</html>
