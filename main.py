@@ -5,7 +5,7 @@ import random
 import string
 import logging
 import datetime
-import libsql-experimental as libsql
+import libsql_experimental as libsql
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
