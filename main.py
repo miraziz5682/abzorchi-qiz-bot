@@ -37,31 +37,45 @@ dp = Dispatcher(storage=MemoryStorage())
 # ============================================================
 # MA'LUMOTLAR BAZASI (Turso - doimiy, bepul, bulutda)
 # ============================================================
-# Quyidagi wrapper klasslar sqlite3'ning conn.execute(...).fetchone()["ustun"]
-# uslubini saqlab qoladi - shu sababli pastdagi barcha SQL kodlar o'zgarishsiz ishlaydi.
+# MUHIM: libsql_experimental drayveri cursor.description orqali ustun
+# nomlarini ishonchli qaytarmaydi, shu sababli har bir jadval uchun ustun
+# nomlari shu yerda QAT'IY (qo'lda) belgilanadi va SQL natijasi shularga
+# mos ravishda dict'ga aylantiriladi - drayverga umuman tayanilmaydi.
+
+TABLE_COLUMNS = {
+    "customers": ["id", "telegram_id", "full_name", "phone", "code", "referred_by_code", "spin_available", "created_at"],
+    "spins": ["id", "customer_id", "prize_name", "awarded", "created_at", "awarded_at"],
+    "referrals": ["id", "referrer_code", "referred_code", "status", "amount", "created_at", "paid_at"],
+    "prizes": ["id", "name", "probability", "active"],
+    "settings": ["key", "value"],
+}
+
+
+def guess_table(sql: str):
+    sql_low = sql.lower()
+    for table in TABLE_COLUMNS:
+        if f"from {table}" in sql_low or f"into {table}" in sql_low:
+            return table
+    return None
+
 
 class DictCursor:
-    def __init__(self, raw_cursor):
+    def __init__(self, raw_cursor, cols=None):
         self._cursor = raw_cursor
-
-    def _cols(self):
-        desc = self._cursor.description
-        if desc:
-            return [d[0] for d in desc]
-        return None
+        self._cols_override = cols
 
     def fetchone(self):
         row = self._cursor.fetchone()
         if row is None:
             return None
-        cols = self._cols() or [str(i) for i in range(len(row))]
+        cols = self._cols_override or [str(i) for i in range(len(row))]
         return dict(zip(cols, row))
 
     def fetchall(self):
         rows = self._cursor.fetchall()
         if not rows:
             return []
-        cols = self._cols() or [str(i) for i in range(len(rows[0]))]
+        cols = self._cols_override or [str(i) for i in range(len(rows[0]))]
         return [dict(zip(cols, r)) for r in rows]
 
 
@@ -69,9 +83,15 @@ class TursoConn:
     def __init__(self):
         self._conn = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
 
-    def execute(self, sql, params=()):
+    def execute(self, sql, params=(), cols=None):
         cur = self._conn.execute(sql, params)
-        return DictCursor(cur)
+        # Ustun ro'yxati aniq berilmagan bo'lsa, "SELECT * FROM jadval" so'rovlari
+        # uchun jadval nomidan avtomatik aniqlanadi.
+        if cols is None and "select *" in sql.lower():
+            table = guess_table(sql)
+            if table:
+                cols = TABLE_COLUMNS[table]
+        return DictCursor(cur, cols)
 
     def executemany(self, sql, seq):
         for params in seq:
@@ -175,7 +195,7 @@ def gen_code():
 
 def get_setting(key, default=None):
     conn = get_db()
-    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,), cols=["value"]).fetchone()
     conn.close()
     return row["value"] if row else default
 
@@ -267,7 +287,9 @@ async def phone_received(message: types.Message, state: FSMContext):
         ),
     )
     conn.commit()
-    customer_id = conn.execute("SELECT id FROM customers WHERE code=?", (code,)).fetchone()["id"]
+    customer_id = conn.execute(
+        "SELECT id FROM customers WHERE code=?", (code,), cols=["id"]
+    ).fetchone()["id"]
 
     if ref_code:
         amount = int(get_setting("referral_amount", "500000"))
