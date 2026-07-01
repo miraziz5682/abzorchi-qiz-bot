@@ -262,7 +262,7 @@ async def phone_received(message: types.Message, state: FSMContext):
             message.from_user.full_name,
             message.contact.phone_number,
             code,
-            ref_code,
+            ref_code or "",
             now_str(),
         ),
     )
