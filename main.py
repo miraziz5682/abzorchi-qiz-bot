@@ -26,6 +26,14 @@ ADMIN_IDS = set(
     int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x
 )
 
+# Buyurtmalarga javob beradigan YAGONA admin (masalan Sabrina)
+MAIN_ADMIN_ID = int(os.environ.get("MAIN_ADMIN_ID", "0") or 0)
+
+# Do'kon/ofis manzili va joylashuvi (mijozga xarid tasdiqlanganda yuboriladi)
+SHOP_ADDRESS = os.environ.get("SHOP_ADDRESS", "Manzil hali sozlanmagan")
+SHOP_LAT = os.environ.get("SHOP_LAT")
+SHOP_LON = os.environ.get("SHOP_LON")
+
 # Turso (bulutdagi doimiy SQLite) ulanish ma'lumotlari - Render Environment'da o'rnatiladi
 TURSO_URL = os.environ["TURSO_DATABASE_URL"]
 TURSO_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
@@ -48,6 +56,10 @@ TABLE_COLUMNS = {
     "referrals": ["id", "referrer_code", "referred_code", "status", "amount", "created_at", "paid_at"],
     "prizes": ["id", "name", "probability", "active"],
     "settings": ["key", "value"],
+    "orders": [
+        "id", "customer_id", "order_type", "details", "status",
+        "admin_reply", "created_at", "answered_at", "confirmed_at",
+    ],
 }
 
 
@@ -162,6 +174,18 @@ def init_db():
         key TEXT PRIMARY KEY,
         value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        order_type TEXT NOT NULL,
+        details TEXT,
+        status TEXT DEFAULT 'pending',
+        admin_reply TEXT,
+        created_at TEXT,
+        answered_at TEXT,
+        confirmed_at TEXT
+    );
     """)
     conn.commit()
 
@@ -240,11 +264,75 @@ def now_str():
 
 
 # ============================================================
+# AVTOMOBIL KATALOGI (buyurtma uchun, faqat ko'rsatish maqsadida)
+# ============================================================
+
+ORDER_CARS = {
+    "TRACKER-2": {
+        "LS PLUS AT": 220_951_000, "LTZ TURBO AT": 244_108_840,
+        "PREMIER TURBO AT": 272_656_160, "REDLINE TURBO AT": 282_474_080,
+    },
+    "ONIX": {
+        "3 LT MT": 184_750_000, "LTZ TURBO AT": 199_899_000,
+        "PREMIER 2 TURBO AT": 221_640_160, "REDLINE TURBO AT": 230_474_000,
+    },
+    "COBALT": {"Style MCM": 156_100_000, "Midnight MCM": 165_200_000},
+    "DAMAS": {"STAYL": 96_932_000, "VAN": 93_170_000, "KOMBI": 96_449_000},
+    "LABO": {"Bazaviy": 96_370_000},
+    "CAPTIVA 5": {"Bazaviy": 349_900_000},
+}
+ORDER_PERCENTS = [25, 30, 40, 50]
+
+
+def create_order(customer_id, order_type, details):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO orders (customer_id, order_type, details, status, created_at) "
+        "VALUES (?, ?, ?, 'pending', ?)",
+        (customer_id, order_type, details, now_str()),
+    )
+    conn.commit()
+    order_id = list(
+        conn.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1", cols=["id"]).fetchone().values()
+    )[0]
+    conn.close()
+    return order_id
+
+
+async def notify_admin_new_order(order_id, customer, details_text):
+    if not MAIN_ADMIN_ID:
+        return
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[
+            types.InlineKeyboardButton(text="✍️ Javob yozish", callback_data=f"order_reply:{order_id}")
+        ]]
+    )
+    await bot.send_message(
+        MAIN_ADMIN_ID,
+        f"🛒 <b>Yangi buyurtma</b>\n\n"
+        f"👤 {customer['full_name']}\n"
+        f"📱 {customer['phone']}\n"
+        f"🔑 Kod: <code>{customer['code']}</code>\n\n"
+        f"{details_text}",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+# ============================================================
 # HOLATLAR
 # ============================================================
 
 class Reg(StatesGroup):
     waiting_phone = State()
+
+
+class OrderFlow(StatesGroup):
+    waiting_custom_text = State()
+
+
+class AdminFlow(StatesGroup):
+    waiting_reply = State()
 
 
 # ============================================================
@@ -354,24 +442,17 @@ CUSTOMER_WEBAPP_URL = os.environ.get("CUSTOMER_WEBAPP_URL", "")
 
 
 def build_main_kb(customer):
-    if CUSTOMER_WEBAPP_URL:
-        cars_button = types.KeyboardButton(
-            text="🚗 Avtomobillar / Bonuslarim",
-            web_app=types.WebAppInfo(url=CUSTOMER_WEBAPP_URL),
-        )
-        rows = [
-            [cars_button],
-            [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
-        ]
-    else:
-        rows = [
-            [types.KeyboardButton(text="🚗 Avtomobillar")],
-            [types.KeyboardButton(text="🎁 Mening bonuslarim")],
-            [types.KeyboardButton(text="👥 Do'stimni taklif qilish")],
-        ]
+    rows = []
     if customer["spin_available"]:
-        rows.insert(0, [types.KeyboardButton(text="🎁 Sovg'amni olish")])
-    return types.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+        rows.append([types.InlineKeyboardButton(text="🎁 Sovg'amni olish", callback_data="spin_wheel")])
+    rows.append([types.InlineKeyboardButton(text="🛒 Buyurtma berish", callback_data="order_menu")])
+    rows.append([types.InlineKeyboardButton(text="🎁 Bonuslarim", callback_data="show_bonus")])
+    rows.append([types.InlineKeyboardButton(text="👥 Do'stimni taklif qilish", callback_data="show_referral")])
+    if CUSTOMER_WEBAPP_URL:
+        rows.append([types.InlineKeyboardButton(
+            text="🌐 Katalog (Web App)", web_app=types.WebAppInfo(url=CUSTOMER_WEBAPP_URL)
+        )])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def show_main_menu(message, customer):
@@ -382,25 +463,36 @@ async def show_main_menu(message, customer):
     )
 
 
-@dp.message(F.text == "🚗 Avtomobillar")
-async def show_cars_info(message: types.Message):
-    await message.answer(
-        "🚗 Avtomobillar haqida to'liq ma'lumot va narxlarni Web App orqali ko'rishingiz mumkin.\n"
-        "(Web App havolasi tez orada qo'shiladi)"
-    )
-
-
-@dp.message(F.text == "🎁 Mening bonuslarim")
-async def show_my_bonuses(message: types.Message):
+def get_customer_by_tg(telegram_id):
     conn = get_db()
-    customer = conn.execute(
-        "SELECT * FROM customers WHERE telegram_id=?", (message.from_user.id,)
-    ).fetchone()
+    customer = conn.execute("SELECT * FROM customers WHERE telegram_id=?", (telegram_id,)).fetchone()
+    conn.close()
+    return customer
+
+
+@dp.callback_query(F.data == "back_main")
+async def back_main_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    customer = get_customer_by_tg(callback.from_user.id)
     if not customer:
-        await message.answer("Avval /start bosing.")
-        conn.close()
+        await callback.answer("Avval /start bosing.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"🏠 Asosiy menyu\n🔑 Sizning kodingiz: <code>{customer['code']}</code>",
+        parse_mode="HTML",
+        reply_markup=build_main_kb(customer),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "show_bonus")
+async def show_my_bonuses(callback: types.CallbackQuery):
+    customer = get_customer_by_tg(callback.from_user.id)
+    if not customer:
+        await callback.answer("Avval /start bosing.", show_alert=True)
         return
 
+    conn = get_db()
     spins = conn.execute(
         "SELECT * FROM spins WHERE customer_id=? ORDER BY id DESC", (customer["id"],)
     ).fetchall()
@@ -425,38 +517,44 @@ async def show_my_bonuses(message: types.Message):
     else:
         text += "Hozircha hech kimni taklif qilmadingiz.\n"
 
-    await message.answer(text, parse_mode="HTML")
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]]
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
 
 
-@dp.message(F.text == "👥 Do'stimni taklif qilish")
-async def show_referral_link(message: types.Message):
-    conn = get_db()
-    customer = conn.execute(
-        "SELECT * FROM customers WHERE telegram_id=?", (message.from_user.id,)
-    ).fetchone()
-    conn.close()
+@dp.callback_query(F.data == "show_referral")
+async def show_referral_link(callback: types.CallbackQuery):
+    customer = get_customer_by_tg(callback.from_user.id)
     if not customer:
-        await message.answer("Avval /start bosing.")
+        await callback.answer("Avval /start bosing.", show_alert=True)
         return
 
     bot_username = (await bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start={customer['code']}"
     amount = get_setting("referral_amount", "200000")
-    await message.answer(
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]]
+    )
+    await callback.message.edit_text(
         f"👥 Do'stingizni shu havola orqali taklif qiling:\n{ref_link}\n\n"
         f"Do'stingiz xarid qilsa, sizga <b>{int(amount):,} so'm</b> bonus beriladi!",
         parse_mode="HTML",
+        reply_markup=kb,
     )
+    await callback.answer()
 
 
-@dp.message(F.text == "🎁 Sovg'amni olish")
-async def spin_wheel(message: types.Message):
+@dp.callback_query(F.data == "spin_wheel")
+async def spin_wheel(callback: types.CallbackQuery):
     conn = get_db()
     customer = conn.execute(
-        "SELECT * FROM customers WHERE telegram_id=?", (message.from_user.id,)
+        "SELECT * FROM customers WHERE telegram_id=?", (callback.from_user.id,)
     ).fetchone()
     if not customer or not customer["spin_available"]:
-        await message.answer("Hozircha sovg'a olish huquqingiz yo'q.")
+        await callback.answer("Hozircha sovg'a olish huquqingiz yo'q.", show_alert=True)
         conn.close()
         return
 
@@ -468,22 +566,227 @@ async def spin_wheel(message: types.Message):
     conn.execute("UPDATE customers SET spin_available=0 WHERE id=?", (customer["id"],))
     conn.commit()
     conn.close()
+    await callback.answer()
 
-    await message.answer(
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Asosiy menyu", callback_data="back_main")]]
+    )
+    await callback.message.edit_text(
         f"🎉 Tabriklaymiz!\n🎁 Yutuqingiz: <b>{prize}</b>\n\n"
         f"Sovg'ani olish uchun sotuv bo'limiga tashrif buyuring.",
         parse_mode="HTML",
+        reply_markup=kb,
     )
-
-    conn = get_db()
-    customer = conn.execute("SELECT * FROM customers WHERE telegram_id=?", (message.from_user.id,)).fetchone()
-    conn.close()
-    await message.answer("🏠 Asosiy menyu", reply_markup=build_main_kb(customer))
 
 
 # ============================================================
 # ADMIN PANEL (Web App orqali kirish tugmasi)
 # ============================================================
+
+# ============================================================
+# BUYURTMA TIZIMI (katalogdan yoki erkin so'rov orqali)
+# ============================================================
+
+@dp.callback_query(F.data == "order_menu")
+async def order_menu(callback: types.CallbackQuery):
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="📋 Katalogdan tanlash", callback_data="order_catalog")],
+            [types.InlineKeyboardButton(text="✍️ Erkin so'rov yozish", callback_data="order_custom")],
+            [types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")],
+        ]
+    )
+    await callback.message.edit_text("🛒 Buyurtma qanday tarzda berilsin?", reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "order_catalog")
+async def order_catalog(callback: types.CallbackQuery):
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text=model, callback_data=f"ord_model:{model}")]
+            for model in ORDER_CARS
+        ] + [[types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="order_menu")]]
+    )
+    await callback.message.edit_text("🚗 Avtomobil modelini tanlang:", reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("ord_model:"))
+async def order_pick_position(callback: types.CallbackQuery):
+    model = callback.data.split(":", 1)[1]
+    positions = ORDER_CARS[model]
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(
+                text=f"{pos} — {price:,.0f} so'm", callback_data=f"ord_pos:{model}:{pos}"
+            )]
+            for pos, price in positions.items()
+        ] + [[types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data="order_catalog")]]
+    )
+    await callback.message.edit_text(f"🚘 {model} — pozitsiyani tanlang:", reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("ord_pos:"))
+async def order_pick_percent(callback: types.CallbackQuery):
+    _, model, pos = callback.data.split(":")
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text=f"{p}%", callback_data=f"ord_pct:{model}:{pos}:{p}")]
+            for p in ORDER_PERCENTS
+        ] + [[types.InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"ord_model:{model}")]]
+    )
+    await callback.message.edit_text(
+        f"✅ {model} {pos}\n\nBoshlang'ich to'lov necha foiz bo'lsin?", reply_markup=kb
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("ord_pct:"))
+async def order_confirm_catalog(callback: types.CallbackQuery):
+    _, model, pos, pct = callback.data.split(":")
+    price = ORDER_CARS[model][pos]
+    customer = get_customer_by_tg(callback.from_user.id)
+    if not customer:
+        await callback.answer("Avval /start bosing.", show_alert=True)
+        return
+
+    details = f"🚗 {model} {pos}\n💰 Narxi: {price:,.0f} so'm\n💵 Boshlang'ich to'lov: {pct}%"
+    order_id = create_order(customer["id"], "catalog", details)
+    await notify_admin_new_order(order_id, customer, details)
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Asosiy menyu", callback_data="back_main")]]
+    )
+    await callback.message.edit_text(
+        "✅ Buyurtmangiz qabul qilindi!\nTez orada sotuvchi siz bilan bog'lanadi.",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "order_custom")
+async def order_custom_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "✍️ So'rovingizni yozing (masalan: qaysi avto, qancha muddat, qanday hisob-kitob kerakligini):"
+    )
+    await state.set_state(OrderFlow.waiting_custom_text)
+    await callback.answer()
+
+
+@dp.message(OrderFlow.waiting_custom_text)
+async def order_custom_receive(message: types.Message, state: FSMContext):
+    customer = get_customer_by_tg(message.from_user.id)
+    if not customer:
+        await message.answer("Avval /start bosing.")
+        await state.clear()
+        return
+
+    details = f"✍️ Erkin so'rov:\n{message.text}"
+    order_id = create_order(customer["id"], "custom", details)
+    await notify_admin_new_order(order_id, customer, details)
+    await state.clear()
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Asosiy menyu", callback_data="back_main")]]
+    )
+    await message.answer(
+        "✅ So'rovingiz qabul qilindi!\nTez orada sotuvchi siz bilan bog'lanadi.",
+        reply_markup=kb,
+    )
+
+
+# ---- Admin tomoni: buyurtmaga javob yozish va tasdiqlash ----
+
+@dp.callback_query(F.data.startswith("order_reply:"))
+async def admin_order_reply_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != MAIN_ADMIN_ID:
+        await callback.answer("Sizda ruxsat yo'q.", show_alert=True)
+        return
+    order_id = int(callback.data.split(":", 1)[1])
+    await state.update_data(order_id=order_id)
+    await callback.message.answer("✍️ Mijozga javobingizni yozing:")
+    await state.set_state(AdminFlow.waiting_reply)
+    await callback.answer()
+
+
+@dp.message(AdminFlow.waiting_reply)
+async def admin_order_reply_send(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    await state.clear()
+
+    conn = get_db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        await message.answer("Buyurtma topilmadi.")
+        return
+
+    customer = conn.execute("SELECT * FROM customers WHERE id=?", (order["customer_id"],)).fetchone()
+    conn.execute(
+        "UPDATE orders SET status='answered', admin_reply=?, answered_at=? WHERE id=?",
+        (message.text, now_str(), order_id),
+    )
+    conn.commit()
+    conn.close()
+
+    # Mijozga javobni + manzilni + joylashuvni yuborish
+    await bot.send_message(
+        customer["telegram_id"],
+        f"💬 Sotuvchi javobi:\n\n{message.text}\n\n📍 Manzil: {SHOP_ADDRESS}",
+    )
+    if SHOP_LAT and SHOP_LON:
+        try:
+            await bot.send_location(customer["telegram_id"], latitude=float(SHOP_LAT), longitude=float(SHOP_LON))
+        except (TypeError, ValueError):
+            pass
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[
+            types.InlineKeyboardButton(text="✅ Xarid tasdiqlandi", callback_data=f"order_confirm:{order_id}")
+        ]]
+    )
+    await message.answer("✅ Javob mijozga yuborildi.", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("order_confirm:"))
+async def admin_order_confirm(callback: types.CallbackQuery):
+    if callback.from_user.id != MAIN_ADMIN_ID:
+        await callback.answer("Sizda ruxsat yo'q.", show_alert=True)
+        return
+    order_id = int(callback.data.split(":", 1)[1])
+
+    conn = get_db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        await callback.answer("Buyurtma topilmadi.", show_alert=True)
+        return
+
+    customer = conn.execute("SELECT * FROM customers WHERE id=?", (order["customer_id"],)).fetchone()
+
+    conn.execute(
+        "UPDATE orders SET status='confirmed', confirmed_at=? WHERE id=?", (now_str(), order_id)
+    )
+    # Keyingi sovg'a olish huquqini ochish
+    conn.execute("UPDATE customers SET spin_available=1 WHERE id=?", (customer["id"],))
+    # Agar mijoz kimdir tomonidan taklif qilingan bo'lsa - referal pulini "to'landi" qilish
+    conn.execute(
+        "UPDATE referrals SET status='paid', paid_at=? WHERE referred_code=? AND status='pending'",
+        (now_str(), customer["code"]),
+    )
+    conn.commit()
+    conn.close()
+
+    await bot.send_message(
+        customer["telegram_id"],
+        "🎉 Xaridingiz tasdiqlandi! Rahmat.\n🎁 Endi yana sovg'a olish huquqingiz ochildi.",
+    )
+    await callback.message.edit_text(callback.message.text + "\n\n✅ Xarid tasdiqlandi.")
+    await callback.answer("Tasdiqlandi!")
+
 
 ADMIN_WEBAPP_URL = os.environ.get("ADMIN_WEBAPP_URL", "")
 
@@ -691,6 +994,114 @@ async def api_customer_info(request):
     }, headers=CORS_HEADERS)
 
 
+async def api_customer_create_order(request):
+    """Mijoz Web App orqali buyurtma (katalogdan yoki erkin) yuboradi."""
+    data = await request.json()
+    telegram_id = data.get("telegram_id")
+    order_type = data.get("order_type", "custom")
+    details = data.get("details", "")
+    if not telegram_id or not details:
+        return web.json_response({"ok": False, "error": "Ma'lumot yetarli emas"}, status=400, headers=CORS_HEADERS)
+
+    conn = get_db()
+    customer = conn.execute("SELECT * FROM customers WHERE telegram_id=?", (telegram_id,)).fetchone()
+    conn.close()
+    if not customer:
+        return web.json_response({"ok": False, "error": "Mijoz topilmadi"}, headers=CORS_HEADERS)
+
+    order_id = create_order(customer["id"], order_type, details)
+    await notify_admin_new_order(order_id, customer, details)
+    return web.json_response({"ok": True, "order_id": order_id}, headers=CORS_HEADERS)
+
+
+async def api_admin_orders(request):
+    admin_id = request.query.get("admin_id")
+    if not is_admin(admin_id):
+        return web.json_response({"ok": False, "error": "Ruxsat yo'q"}, status=403, headers=CORS_HEADERS)
+
+    conn = get_db()
+    orders = conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 200").fetchall()
+    result = []
+    for o in orders:
+        customer = conn.execute(
+            "SELECT * FROM customers WHERE id=?", (o["customer_id"],)
+        ).fetchone()
+        item = dict(o)
+        item["customer_code"] = customer["code"] if customer else "—"
+        item["customer_phone"] = customer["phone"] if customer else "—"
+        item["customer_name"] = customer["full_name"] if customer else "—"
+        result.append(item)
+    conn.close()
+    return web.json_response({"ok": True, "orders": result}, headers=CORS_HEADERS)
+
+
+async def api_admin_order_reply(request):
+    data = await request.json()
+    if not is_admin(data.get("admin_id")):
+        return web.json_response({"ok": False, "error": "Ruxsat yo'q"}, status=403, headers=CORS_HEADERS)
+
+    order_id = data.get("order_id")
+    reply_text = data.get("reply_text", "").strip()
+    if not order_id or not reply_text:
+        return web.json_response({"ok": False, "error": "Ma'lumot yetarli emas"}, status=400, headers=CORS_HEADERS)
+
+    conn = get_db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        return web.json_response({"ok": False, "error": "Buyurtma topilmadi"}, headers=CORS_HEADERS)
+
+    customer = conn.execute("SELECT * FROM customers WHERE id=?", (order["customer_id"],)).fetchone()
+    conn.execute(
+        "UPDATE orders SET status='answered', admin_reply=?, answered_at=? WHERE id=?",
+        (reply_text, now_str(), order_id),
+    )
+    conn.commit()
+    conn.close()
+
+    await bot.send_message(
+        customer["telegram_id"],
+        f"💬 Sotuvchi javobi:\n\n{reply_text}\n\n📍 Manzil: {SHOP_ADDRESS}",
+    )
+    if SHOP_LAT and SHOP_LON:
+        try:
+            await bot.send_location(customer["telegram_id"], latitude=float(SHOP_LAT), longitude=float(SHOP_LON))
+        except (TypeError, ValueError):
+            pass
+
+    return web.json_response({"ok": True}, headers=CORS_HEADERS)
+
+
+async def api_admin_order_confirm(request):
+    data = await request.json()
+    if not is_admin(data.get("admin_id")):
+        return web.json_response({"ok": False, "error": "Ruxsat yo'q"}, status=403, headers=CORS_HEADERS)
+
+    order_id = data.get("order_id")
+    conn = get_db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        return web.json_response({"ok": False, "error": "Buyurtma topilmadi"}, headers=CORS_HEADERS)
+
+    customer = conn.execute("SELECT * FROM customers WHERE id=?", (order["customer_id"],)).fetchone()
+
+    conn.execute("UPDATE orders SET status='confirmed', confirmed_at=? WHERE id=?", (now_str(), order_id))
+    conn.execute("UPDATE customers SET spin_available=1 WHERE id=?", (customer["id"],))
+    conn.execute(
+        "UPDATE referrals SET status='paid', paid_at=? WHERE referred_code=? AND status='pending'",
+        (now_str(), customer["code"]),
+    )
+    conn.commit()
+    conn.close()
+
+    await bot.send_message(
+        customer["telegram_id"],
+        "🎉 Xaridingiz tasdiqlandi! Rahmat.\n🎁 Endi yana sovg'a olish huquqingiz ochildi.",
+    )
+    return web.json_response({"ok": True}, headers=CORS_HEADERS)
+
+
 # ============================================================
 # WEBHOOK VA ILOVANI ISHGA TUSHIRISH
 # ============================================================
@@ -712,6 +1123,10 @@ def main():
         ("GET", "/api/admin/stats", api_stats),
         ("GET", "/api/admin/customers", api_list_customers),
         ("GET", "/api/customer/info", api_customer_info),
+        ("POST", "/api/customer/create-order", api_customer_create_order),
+        ("GET", "/api/admin/orders", api_admin_orders),
+        ("POST", "/api/admin/order-reply", api_admin_order_reply),
+        ("POST", "/api/admin/order-confirm", api_admin_order_confirm),
     ]
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
